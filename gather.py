@@ -3,6 +3,7 @@ import numpy as np
 import random
 import os
 from PIL import Image
+import scipy.signal
 
 # Initialize Pygame
 pygame.init()
@@ -13,24 +14,33 @@ CELL_SIZE = 1
 GRID_WIDTH, GRID_HEIGHT = WIDTH, HEIGHT
 
 # Colors and element types
-EMPTY, SAND, WATER, PLANT, WOOD, ACID, FIRE = range(7)
+EMPTY, SAND, WATER, PLANT, WOOD, ACID, FIRE, STEAM, SALT, TNT, WAX, OIL, LAVA, STONE = range(14)
 
-COLORS = {
+# Base colors (R, G, B) - Using distinct colors for each element
+BASE_COLORS = {
     EMPTY: (0, 0, 0),
     SAND: (194, 178, 128),
     WATER: (0, 0, 255),
     PLANT: (0, 255, 0),
     WOOD: (139, 69, 19),
     ACID: (255, 255, 0),
-    FIRE: (255, 0, 0)
+    FIRE: (255, 0, 0),
+    STEAM: (200, 200, 200),
+    SALT: (255, 255, 255),
+    TNT: (255, 0, 128),
+    WAX: (255, 220, 180),
+    OIL: (80, 80, 80),
+    LAVA: (255, 69, 0),
+    STONE: (128, 128, 128)
 }
 
 # Set up the display
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
-pygame.display.set_caption("Falling Sand Game")
+pygame.display.set_caption("Enhanced Falling Sand Simulation")
 
-# Create the grid
-grid = np.zeros((WIDTH, HEIGHT), dtype=int)
+# Create the grids
+element_grid = np.zeros((WIDTH, HEIGHT), dtype=int)
+temperature_grid = np.zeros((WIDTH, HEIGHT), dtype=float)
 
 def create_random_shape(element, max_size=50):
     shape_type = random.choice(["circle", "rectangle"])
@@ -44,7 +54,9 @@ def create_random_shape(element, max_size=50):
                 if dx*dx + dy*dy <= radius*radius:
                     nx, ny = x + dx, y + dy
                     if 0 <= nx < WIDTH and 0 <= ny < HEIGHT:
-                        grid[nx, ny] = element
+                        element_grid[nx, ny] = element
+                        if element in [FIRE, LAVA]:
+                            temperature_grid[nx, ny] = random.uniform(800, 1200)
     else:  # rectangle
         w = random.randint(5, max_size)
         h = random.randint(5, max_size)
@@ -52,74 +64,116 @@ def create_random_shape(element, max_size=50):
             for dy in range(h):
                 nx, ny = x + dx, y + dy
                 if 0 <= nx < WIDTH and 0 <= ny < HEIGHT:
-                    grid[nx, ny] = element
+                    element_grid[nx, ny] = element
+                    if element in [FIRE, LAVA]:
+                        temperature_grid[nx, ny] = random.uniform(800, 1200)
 
 def create_random_start():
-    global grid
-    grid = np.zeros((WIDTH, HEIGHT), dtype=int)
+    global element_grid, temperature_grid
+    element_grid = np.zeros((WIDTH, HEIGHT), dtype=int)
+    temperature_grid = np.full((WIDTH, HEIGHT), 20.0)  # Start at room temperature
     
     # Create shapes for each element
-    for element in [SAND, WATER, PLANT, WOOD, ACID, FIRE]:
-        num_shapes = random.randint(1, 5)
+    for element in [SAND, WATER, PLANT, WOOD, ACID, FIRE, SALT, TNT, WAX, OIL, LAVA, STONE]:
+        num_shapes = random.randint(1, 3)
         for _ in range(num_shapes):
             create_random_shape(element)
 
-def update_sand(x, y):
+def update_temperature():
+    # Simple heat diffusion
+    kernel = np.array([[0.05, 0.1, 0.05],
+                       [0.1, 0.4, 0.1],
+                       [0.05, 0.1, 0.05]])
+    
+    global temperature_grid
+    temperature_grid = scipy.signal.convolve2d(temperature_grid, kernel, mode='same', boundary='wrap')
+    
+    # Cooling
+    temperature_grid = np.maximum(20, temperature_grid * 0.99)
+
+def get_color(x, y):
+    base_color = BASE_COLORS[element_grid[x, y]]
+    temp = temperature_grid[x, y]
+    
+    # Map temperature to alpha channel (155-255)
+    alpha = int(np.clip((temp - 20) / (1200 - 20) * 100 + 155, 155, 255))
+    
+    return base_color + (alpha,)
+
+def update_movable(x, y, element):
     if y < HEIGHT - 1:
-        if grid[x, y + 1] == EMPTY:
-            grid[x, y + 1] = SAND
-            grid[x, y] = EMPTY
+        if element_grid[x, y + 1] == EMPTY:
+            element_grid[x, y + 1] = element
+            element_grid[x, y] = EMPTY
+            temperature_grid[x, y + 1] = temperature_grid[x, y]
             return True
-        elif x > 0 and grid[x - 1, y + 1] == EMPTY:
-            grid[x - 1, y + 1] = SAND
-            grid[x, y] = EMPTY
+        elif x > 0 and element_grid[x - 1, y + 1] == EMPTY:
+            element_grid[x - 1, y + 1] = element
+            element_grid[x, y] = EMPTY
+            temperature_grid[x - 1, y + 1] = temperature_grid[x, y]
             return True
-        elif x < WIDTH - 1 and grid[x + 1, y + 1] == EMPTY:
-            grid[x + 1, y + 1] = SAND
-            grid[x, y] = EMPTY
+        elif x < WIDTH - 1 and element_grid[x + 1, y + 1] == EMPTY:
+            element_grid[x + 1, y + 1] = element
+            element_grid[x, y] = EMPTY
+            temperature_grid[x + 1, y + 1] = temperature_grid[x, y]
+            return True
+    return False
+
+def update_liquid(x, y, element):
+    if update_movable(x, y, element):
+        return True
+    else:
+        dx = random.choice([-1, 1])
+        if 0 <= x + dx < WIDTH and element_grid[x + dx, y] == EMPTY:
+            element_grid[x + dx, y] = element
+            element_grid[x, y] = EMPTY
+            temperature_grid[x + dx, y] = temperature_grid[x, y]
             return True
     return False
 
 def update_water(x, y):
-    if y < HEIGHT - 1:
-        if grid[x, y + 1] == EMPTY:
-            grid[x, y + 1] = WATER
-            grid[x, y] = EMPTY
-            return True
-        else:
-            dx = random.choice([-1, 1])
-            if 0 <= x + dx < WIDTH and grid[x + dx, y] == EMPTY:
-                grid[x + dx, y] = WATER
-                grid[x, y] = EMPTY
-                return True
+    if update_liquid(x, y, WATER):
+        return True
+    
+    # Water evaporation
+    if temperature_grid[x, y] >= 100 and random.random() < 0.1:
+        element_grid[x, y] = STEAM
+        temperature_grid[x, y] -= 50  # Cooling effect of evaporation
+        return True
+    
     return False
 
 def update_plant(x, y):
-    growth_chance = 0.1
+    growth_chance = 0.05
     for dx, dy in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
         nx, ny = x + dx, y + dy
         if 0 <= nx < WIDTH and 0 <= ny < HEIGHT:
-            if grid[nx, ny] == WATER:
+            if element_grid[nx, ny] == WATER:
                 if random.random() < growth_chance:
-                    grid[nx, ny] = PLANT
+                    element_grid[nx, ny] = PLANT
                     return True
+    
+    # Plant burning
+    if temperature_grid[x, y] > 300 and random.random() < 0.1:
+        element_grid[x, y] = FIRE
+        temperature_grid[x, y] = random.uniform(800, 1000)
+        return True
+    
     return False
 
 def update_acid(x, y):
-    if y < HEIGHT - 1:
-        if grid[x, y + 1] in [EMPTY, PLANT, WOOD]:
-            grid[x, y + 1] = ACID
-            grid[x, y] = EMPTY
-            return True
-        else:
-            dx = random.choice([-1, 1])
-            if 0 <= x + dx < WIDTH and grid[x + dx, y] in [EMPTY, PLANT, WOOD]:
-                grid[x + dx, y] = ACID
-                grid[x, y] = EMPTY
-                return True
-    if random.random() < 0.005:
-        grid[x, y] = EMPTY
+    if update_liquid(x, y, ACID):
         return True
+    
+    # Acid reaction
+    for dx, dy in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
+        nx, ny = x + dx, y + dy
+        if 0 <= nx < WIDTH and 0 <= ny < HEIGHT:
+            if element_grid[nx, ny] in [PLANT, WOOD, SAND]:
+                element_grid[nx, ny] = EMPTY
+                temperature_grid[nx, ny] += random.uniform(10, 30)
+                return True
+    
     return False
 
 def update_fire(x, y):
@@ -128,47 +182,189 @@ def update_fire(x, y):
         for dy in [-1, 0, 1]:
             nx, ny = x + dx, y + dy
             if 0 <= nx < WIDTH and 0 <= ny < HEIGHT:
-                if grid[nx, ny] in [WOOD, PLANT] and random.random() < 0.1:
-                    grid[nx, ny] = FIRE
+                if element_grid[nx, ny] in [WOOD, PLANT, OIL, TNT] and random.random() < 0.1:
+                    element_grid[nx, ny] = FIRE
+                    temperature_grid[nx, ny] = random.uniform(800, 1000)
                     moved = True
+                elif element_grid[nx, ny] == WATER:
+                    # Fire extinguishing
+                    element_grid[x, y] = STEAM
+                    temperature_grid[x, y] = 100
+                    element_grid[nx, ny] = EMPTY
+                    temperature_grid[nx, ny] = 100
+                    return True
+    
+    # Fire burning out
     if random.random() < 0.05:
-        grid[x, y] = EMPTY
+        element_grid[x, y] = EMPTY
+        temperature_grid[x, y] = max(100, temperature_grid[x, y] - random.uniform(50, 100))
         moved = True
     return moved
+
+def update_steam(x, y):
+    if y > 0 and element_grid[x, y - 1] == EMPTY:
+        element_grid[x, y - 1] = STEAM
+        element_grid[x, y] = EMPTY
+        temperature_grid[x, y - 1] = temperature_grid[x, y]
+        return True
+    else:
+        dx = random.choice([-1, 1])
+        if 0 <= x + dx < WIDTH and element_grid[x + dx, y] == EMPTY:
+            element_grid[x + dx, y] = STEAM
+            element_grid[x, y] = EMPTY
+            temperature_grid[x + dx, y] = temperature_grid[x, y]
+            return True
+    
+    # Steam condensation
+    if temperature_grid[x, y] < 100 and random.random() < 0.1:
+        element_grid[x, y] = WATER
+        temperature_grid[x, y] += 50  # Heating effect of condensation
+        return True
+    
+    return False
+
+def update_salt(x, y):
+    if update_movable(x, y, SALT):
+        return True
+    
+    # Salt dissolving in water
+    for dx, dy in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
+        nx, ny = x + dx, y + dy
+        if 0 <= nx < WIDTH and 0 <= ny < HEIGHT:
+            if element_grid[nx, ny] == WATER and random.random() < 0.1:
+                element_grid[x, y] = WATER
+                return True
+    
+    return False
+
+def update_tnt(x, y):
+    if update_movable(x, y, TNT):
+        return True
+    
+    # TNT explosion
+    if temperature_grid[x, y] > 500 or any(
+        element_grid[nx, ny] == FIRE 
+        for nx, ny in [(x-1, y), (x+1, y), (x, y-1), (x, y+1)]
+        if 0 <= nx < WIDTH and 0 <= ny < HEIGHT
+    ):
+        explosion_radius = random.randint(5, 10)
+        for dx in range(-explosion_radius, explosion_radius + 1):
+            for dy in range(-explosion_radius, explosion_radius + 1):
+                if dx*dx + dy*dy <= explosion_radius*explosion_radius:
+                    nx, ny = x + dx, y + dy
+                    if 0 <= nx < WIDTH and 0 <= ny < HEIGHT:
+                        if random.random() < 0.7:
+                            element_grid[nx, ny] = FIRE
+                        else:
+                            element_grid[nx, ny] = EMPTY
+                        temperature_grid[nx, ny] = random.uniform(800, 1200)
+        return True
+    
+    return False
+
+def update_wax(x, y):
+    if temperature_grid[x, y] > 60:  # Wax melting point
+        return update_liquid(x, y, WAX)
+    else:
+        return update_movable(x, y, WAX)
+
+def update_oil(x, y):
+    if update_liquid(x, y, OIL):
+        return True
+    
+    # Oil catching fire
+    if temperature_grid[x, y] > 400 or any(
+        element_grid[nx, ny] == FIRE 
+        for nx, ny in [(x-1, y), (x+1, y), (x, y-1), (x, y+1)]
+        if 0 <= nx < WIDTH and 0 <= ny < HEIGHT
+    ):
+        element_grid[x, y] = FIRE
+        temperature_grid[x, y] = random.uniform(800, 1000)
+        return True
+    
+    return False
+
+def update_lava(x, y):
+    if update_liquid(x, y, LAVA):
+        return True
+    
+    # Lava cooling and solidifying
+    if temperature_grid[x, y] < 700:
+        if random.random() < 0.1:
+            element_grid[x, y] = STONE
+            return True
+    
+    # Lava setting things on fire
+    for dx, dy in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
+        nx, ny = x + dx, y + dy
+        if 0 <= nx < WIDTH and 0 <= ny < HEIGHT:
+            if element_grid[nx, ny] in [WOOD, PLANT, OIL]:
+                element_grid[nx, ny] = FIRE
+                temperature_grid[nx, ny] = random.uniform(800, 1000)
+                return True
+    
+    return False
 
 def update_grid():
     moved = 0
     for x in range(WIDTH):
         for y in range(HEIGHT - 1, -1, -1):
-            if grid[x, y] == SAND:
-                moved += update_sand(x, y)
-            elif grid[x, y] == WATER:
+            if element_grid[x, y] == SAND:
+                moved += update_movable(x, y, SAND)
+            elif element_grid[x, y] == WATER:
                 moved += update_water(x, y)
-            elif grid[x, y] == PLANT:
+            elif element_grid[x, y] == PLANT:
                 moved += update_plant(x, y)
-            elif grid[x, y] == ACID:
+            elif element_grid[x, y] == ACID:
                 moved += update_acid(x, y)
-            elif grid[x, y] == FIRE:
+            elif element_grid[x, y] == FIRE:
                 moved += update_fire(x, y)
+            elif element_grid[x, y] == STEAM:
+                moved += update_steam(x, y)
+            elif element_grid[x, y] == SALT:
+                moved += update_salt(x, y)
+            elif element_grid[x, y] == TNT:
+                moved += update_tnt(x, y)
+            elif element_grid[x, y] == WAX:
+                moved += update_wax(x, y)
+            elif element_grid[x, y] == OIL:
+                moved += update_oil(x, y)
+            elif element_grid[x, y] == LAVA:
+                moved += update_lava(x, y)
+            # Stone doesn't need an update function as it's static
     return moved
 
 def draw_particles():
-    surface = pygame.Surface((WIDTH, HEIGHT))
+    surface = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
     for x in range(WIDTH):
         for y in range(HEIGHT):
-            color = COLORS[grid[x, y]]
+            color = get_color(x, y)
             surface.set_at((x, y), color)
     screen.blit(surface, (0, 0))
     return surface
 
 def save_frame(surface, folder, frame_number):
-    pygame_image = pygame.surfarray.array3d(surface)
-    image = Image.fromarray(pygame_image.transpose(1, 0, 2))
+    pixel_array = pygame.surfarray.array2d(surface)
+    
+    # Create an empty RGBA array
+    rgba_array = np.zeros((WIDTH, HEIGHT, 4), dtype=np.uint8)
+    
+    # Fill the RGBA array
+    for x in range(WIDTH):
+        for y in range(HEIGHT):
+            pixel = pixel_array[x, y]
+            r = (pixel >> 16) & 255
+            g = (pixel >> 8) & 255
+            b = pixel & 255
+            a = (pixel >> 24) & 255
+            rgba_array[y, x] = [r, g, b, a]  # Note the y, x order for PIL
+    
+    image = Image.fromarray(rgba_array, 'RGBA')
     image.save(f"{folder}/frame_{frame_number:04d}.png")
 
 # Main simulation loop
 num_simulations = 100
-main_folder = "falling_sand_frames"
+main_folder = "enhanced_falling_sand_frames"
 os.makedirs(main_folder, exist_ok=True)
 
 MAX_FRAMES = 2000
@@ -188,6 +384,7 @@ for sim in range(num_simulations):
         save_frame(surface, sim_folder, frame_number)
         
         moved = update_grid()
+        update_temperature()
         frame_number += 1
         
         if moved <= MOVEMENT_THRESHOLD:
@@ -204,4 +401,4 @@ for sim in range(num_simulations):
     save_frame(surface, sim_folder, frame_number)
 
 pygame.quit()
-print("Data collection complete.")
+print("Enhanced data collection complete.")
