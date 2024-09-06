@@ -55,7 +55,7 @@ class SimpleSandModel(nn.Module):
 # Load the trained model
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model = SimpleSandModel(input_channels=14, hidden_size=32).to(device)
-model.load_state_dict(torch.load('best_sand_model.pth', map_location=device))
+model.load_state_dict(torch.load('best_sand_model_v3.pth', map_location=device))
 model.eval()
 
 @torch.no_grad()

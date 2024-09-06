@@ -32,34 +32,32 @@ COLORS = {
 
 # Set up the display
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
-pygame.display.set_caption("Enhanced Falling Sand Game (Improved Model Prediction)")
+pygame.display.set_caption("Enhanced Falling Sand Game (New Model Prediction)")
 
 # Create the grid
 grid = np.zeros((GRID_WIDTH, GRID_HEIGHT, 14), dtype=np.float32)
 grid[:,:,EMPTY] = 1  # Initialize with all cells empty
 
-# Define the improved model architecture
-class ImprovedSandModel(nn.Module):
+# Define the new model architecture
+class EnhancedSandModel(nn.Module):
     def __init__(self, input_channels=14, hidden_size=64):
-        super(ImprovedSandModel, self).__init__()
-        self.conv1 = nn.Conv2d(input_channels, hidden_size, kernel_size=5, padding=2)
-        self.bn1 = nn.BatchNorm2d(hidden_size)
-        self.conv2 = nn.Conv2d(hidden_size, hidden_size * 2, kernel_size=3, padding=1)
-        self.bn2 = nn.BatchNorm2d(hidden_size * 2)
-        self.conv3 = nn.Conv2d(hidden_size * 2, hidden_size, kernel_size=3, padding=1)
-        self.bn3 = nn.BatchNorm2d(hidden_size)
+        super(EnhancedSandModel, self).__init__()
+        self.conv1 = nn.Conv2d(input_channels * 3, hidden_size, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv2d(hidden_size, hidden_size, kernel_size=3, padding=1)
+        self.conv3 = nn.Conv2d(hidden_size, hidden_size, kernel_size=3, padding=1)
         self.conv4 = nn.Conv2d(hidden_size, input_channels, kernel_size=3, padding=1)
 
     def forward(self, x):
-        x = torch.relu(self.bn1(self.conv1(x)))
-        x = torch.relu(self.bn2(self.conv2(x)))
-        x = torch.relu(self.bn3(self.conv3(x)))
-        return self.conv4(x)
+        x = torch.relu(self.conv1(x))
+        x = torch.relu(self.conv2(x))
+        x = torch.relu(self.conv3(x))
+        x = self.conv4(x)
+        return x
 
 # Load the trained model
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model = ImprovedSandModel(input_channels=14, hidden_size=64).to(device)
-model.load_state_dict(torch.load('best_improved_sand_model.pth', map_location=device, weights_only=True))
+model = EnhancedSandModel(input_channels=14, hidden_size=64).to(device)
+model.load_state_dict(torch.load('best_curriculum_sand_model.pth', map_location=device))
 model.eval()
 
 @torch.no_grad()
@@ -68,6 +66,10 @@ def predict_next_frame(model, current_frame):
     current_frame = np.rot90(current_frame, k=-1, axes=(0, 1)).copy()
     current_frame = current_frame.transpose(2, 0, 1)
     current_frame = torch.from_numpy(current_frame).unsqueeze(0).float().to(device)
+    
+    # Repeat the current frame to match the model's input shape
+    current_frame = current_frame.repeat(1, 3, 1, 1)
+    
     output = model(current_frame)
     # Rotate the output back 90 degrees counterclockwise
     output = torch.rot90(output.squeeze(), k=1, dims=(1, 2))

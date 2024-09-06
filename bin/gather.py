@@ -4,7 +4,6 @@ import random
 import os
 from PIL import Image
 import scipy.signal
-#Partly based on: https://code.google.com/archive/p/fallingsand-python
 
 # Initialize Pygame
 pygame.init()
@@ -37,68 +36,103 @@ BASE_COLORS = {
 
 # Set up the display
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
-pygame.display.set_caption("Enhanced Falling Sand Simulation")
+pygame.display.set_caption("Curriculum-based Falling Sand Simulation")
 
 # Create the grids
 element_grid = np.zeros((WIDTH, HEIGHT), dtype=int)
 temperature_grid = np.zeros((WIDTH, HEIGHT), dtype=float)
 
-def create_random_shape(element, max_size=50):
-    shape_type = random.choice(["circle", "rectangle"])
-    x = random.randint(0, WIDTH - 1)
-    y = random.randint(0, HEIGHT - 1)
-    
-    if shape_type == "circle":
-        radius = random.randint(5, max_size // 2)
-        for dx in range(-radius, radius + 1):
-            for dy in range(-radius, radius + 1):
-                if dx*dx + dy*dy <= radius*radius:
-                    nx, ny = x + dx, y + dy
-                    if 0 <= nx < WIDTH and 0 <= ny < HEIGHT:
-                        element_grid[nx, ny] = element
-                        if element in [FIRE, LAVA]:
-                            temperature_grid[nx, ny] = random.uniform(800, 1200)
-    else:  # rectangle
-        w = random.randint(5, max_size)
-        h = random.randint(5, max_size)
-        for dx in range(w):
-            for dy in range(h):
-                nx, ny = x + dx, y + dy
+def create_square_shape(element, x, y, width, height):
+    for dx in range(width):
+        for dy in range(height):
+            nx, ny = x + dx, y + dy
+            if 0 <= nx < WIDTH and 0 <= ny < HEIGHT:
+                element_grid[nx, ny] = element
+                if element in [FIRE, LAVA]:
+                    temperature_grid[nx, ny] = random.uniform(800, 1200)
+                else:
+                    temperature_grid[nx, ny] = 20.0  # Room temperature
+
+def create_circle_shape(element, center_x, center_y, radius):
+    for dx in range(-radius, radius + 1):
+        for dy in range(-radius, radius + 1):
+            if dx*dx + dy*dy <= radius*radius:
+                nx, ny = center_x + dx, center_y + dy
                 if 0 <= nx < WIDTH and 0 <= ny < HEIGHT:
                     element_grid[nx, ny] = element
                     if element in [FIRE, LAVA]:
                         temperature_grid[nx, ny] = random.uniform(800, 1200)
+                    else:
+                        temperature_grid[nx, ny] = 20.0  # Room temperature
 
-def create_random_start():
+def create_single_element_scenario(element):
     global element_grid, temperature_grid
     element_grid = np.zeros((WIDTH, HEIGHT), dtype=int)
-    temperature_grid = np.full((WIDTH, HEIGHT), 20.0)  # Start at room temperature
+    temperature_grid = np.full((WIDTH, HEIGHT), 20.0)
     
-    # Create shapes for each element
-    for element in [SAND, WATER, PLANT, WOOD, ACID, FIRE, SALT, TNT, WAX, OIL, LAVA, STONE]:
-        num_shapes = random.randint(1, 3)
-        for _ in range(num_shapes):
-            create_random_shape(element)
+    if random.choice([True, False]):  # Randomly choose between square and circle
+        shape_width = random.randint(30, 50)
+        shape_height = random.randint(30, 50)
+        x = random.randint(0, WIDTH - shape_width)
+        y = random.randint(0, HEIGHT - shape_height)
+        create_square_shape(element, x, y, shape_width, shape_height)
+    else:
+        radius = random.randint(15, 25)
+        center_x = random.randint(radius, WIDTH - radius)
+        center_y = random.randint(radius, HEIGHT - radius)
+        create_circle_shape(element, center_x, center_y, radius)
+
+def create_two_element_scenario(element1, element2):
+    global element_grid, temperature_grid
+    element_grid = np.zeros((WIDTH, HEIGHT), dtype=int)
+    temperature_grid = np.full((WIDTH, HEIGHT), 20.0)
+    
+    for element in [element1, element2]:
+        if random.choice([True, False]):  # Randomly choose between square and circle
+            shape_width = random.randint(30, 50)
+            shape_height = random.randint(30, 50)
+            x = random.randint(0, WIDTH - shape_width)
+            y = random.randint(0, HEIGHT - shape_height)
+            create_square_shape(element, x, y, shape_width, shape_height)
+        else:
+            radius = random.randint(15, 25)
+            center_x = random.randint(radius, WIDTH - radius)
+            center_y = random.randint(radius, HEIGHT - radius)
+            create_circle_shape(element, center_x, center_y, radius)
+
+def create_all_elements_scenario():
+    global element_grid, temperature_grid
+    element_grid = np.zeros((WIDTH, HEIGHT), dtype=int)
+    temperature_grid = np.full((WIDTH, HEIGHT), 20.0)
+    
+    elements = [SAND, WATER, PLANT, WOOD, ACID, FIRE, STEAM, SALT, TNT, WAX, OIL, LAVA, STONE]
+    random.shuffle(elements)
+    
+    band_height = HEIGHT // len(elements)
+    for i, element in enumerate(elements):
+        if random.choice([True, False]):  # Randomly choose between square and circle
+            create_square_shape(element, 0, i * band_height, WIDTH, band_height)
+        else:
+            num_circles = random.randint(3, 6)
+            for _ in range(num_circles):
+                radius = random.randint(10, 20)
+                center_x = random.randint(radius, WIDTH - radius)
+                center_y = random.randint(i * band_height + radius, (i + 1) * band_height - radius)
+                create_circle_shape(element, center_x, center_y, radius)
 
 def update_temperature():
-    # Simple heat diffusion
     kernel = np.array([[0.05, 0.1, 0.05],
                        [0.1, 0.4, 0.1],
                        [0.05, 0.1, 0.05]])
     
     global temperature_grid
     temperature_grid = scipy.signal.convolve2d(temperature_grid, kernel, mode='same', boundary='wrap')
-    
-    # Cooling
     temperature_grid = np.maximum(20, temperature_grid * 0.99)
 
 def get_color(x, y):
     base_color = BASE_COLORS[element_grid[x, y]]
     temp = temperature_grid[x, y]
-    
-    # Map temperature to alpha channel (155-255)
     alpha = int(np.clip((temp - 20) / (1200 - 20) * 100 + 155, 155, 255))
-    
     return base_color + (alpha,)
 
 def update_movable(x, y, element):
@@ -135,13 +169,10 @@ def update_liquid(x, y, element):
 def update_water(x, y):
     if update_liquid(x, y, WATER):
         return True
-    
-    # Water evaporation
     if temperature_grid[x, y] >= 100 and random.random() < 0.1:
         element_grid[x, y] = STEAM
-        temperature_grid[x, y] -= 50  # Cooling effect of evaporation
+        temperature_grid[x, y] -= 50
         return True
-    
     return False
 
 def update_plant(x, y):
@@ -153,13 +184,10 @@ def update_plant(x, y):
                 if random.random() < growth_chance:
                     element_grid[nx, ny] = PLANT
                     return True
-    
-    # Plant burning
     if temperature_grid[x, y] > 300 and random.random() < 0.1:
         element_grid[x, y] = FIRE
         temperature_grid[x, y] = random.uniform(800, 1000)
         return True
-    
     return False
 
 def update_fire(x, y):
@@ -173,14 +201,11 @@ def update_fire(x, y):
                     temperature_grid[nx, ny] = random.uniform(800, 1000)
                     moved = True
                 elif element_grid[nx, ny] == WATER:
-                    # Fire extinguishing
                     element_grid[x, y] = STEAM
                     temperature_grid[x, y] = 100
                     element_grid[nx, ny] = EMPTY
                     temperature_grid[nx, ny] = 100
                     return True
-    
-    # Fire burning out
     if random.random() < 0.05:
         element_grid[x, y] = EMPTY
         temperature_grid[x, y] = max(100, temperature_grid[x, y] - random.uniform(50, 100))
@@ -190,14 +215,10 @@ def update_fire(x, y):
 def update_lava(x, y):
     if update_liquid(x, y, LAVA):
         return True
-    
-    # Lava cooling and solidifying
     if temperature_grid[x, y] < 700:
         if random.random() < 0.1:
             element_grid[x, y] = STONE
             return True
-    
-    # Lava setting things on fire
     for dx, dy in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
         nx, ny = x + dx, y + dy
         if 0 <= nx < WIDTH and 0 <= ny < HEIGHT:
@@ -205,7 +226,6 @@ def update_lava(x, y):
                 element_grid[nx, ny] = FIRE
                 temperature_grid[nx, ny] = random.uniform(800, 1000)
                 return True
-    
     return False
 
 def update_grid():
@@ -222,7 +242,6 @@ def update_grid():
                 moved += update_fire(x, y)
             elif element_grid[x, y] == LAVA:
                 moved += update_lava(x, y)
-            # Add more element updates here
     return moved
 
 def draw_particles():
@@ -236,11 +255,7 @@ def draw_particles():
 
 def save_frame(surface, folder, frame_number):
     pixel_array = pygame.surfarray.array2d(surface)
-    
-    # Create an empty RGBA array
     rgba_array = np.zeros((WIDTH, HEIGHT, 4), dtype=np.uint8)
-    
-    # Fill the RGBA array
     for x in range(WIDTH):
         for y in range(HEIGHT):
             pixel = pixel_array[x, y]
@@ -248,50 +263,59 @@ def save_frame(surface, folder, frame_number):
             g = (pixel >> 8) & 255
             b = pixel & 255
             a = (pixel >> 24) & 255
-            rgba_array[y, x] = [r, g, b, a]  # Note the y, x order for PIL
-    
+            rgba_array[y, x] = [r, g, b, a]
     image = Image.fromarray(rgba_array, 'RGBA')
     image.save(f"{folder}/frame_{frame_number:04d}.png")
 
-# Main simulation loop
-num_simulations = 100
-offset = 0
-main_folder = "enhanced_falling_sand_frames"
-os.makedirs(main_folder, exist_ok=True)
+def run_simulation(scenario_func, scenario_name, num_simulations):
+    main_folder = f"curriculum_falling_sand_frames/{scenario_name}"
+    os.makedirs(main_folder, exist_ok=True)
 
-MAX_FRAMES = 500
-MOVEMENT_THRESHOLD = 30
+    MAX_FRAMES = 500  # Increased from 100 to 500
+    MOVEMENT_THRESHOLD = 30
 
-for sim in range(num_simulations):
-    sim = sim + offset
-    # Create a subfolder for this simulation
-    sim_folder = os.path.join(main_folder, f"simulation_{sim:03d}")
-    os.makedirs(sim_folder, exist_ok=True)
-    
-    create_random_start()
-    
-    frame_number = 0
-    
-    while frame_number < MAX_FRAMES:
+    for sim in range(num_simulations):
+        sim_folder = os.path.join(main_folder, f"simulation_{sim:03d}")
+        os.makedirs(sim_folder, exist_ok=True)
+        
+        scenario_func()
+        
+        frame_number = 0
+        
+        while frame_number < MAX_FRAMES:
+            surface = draw_particles()
+            save_frame(surface, sim_folder, frame_number)
+            
+            moved = update_grid()
+            update_temperature()
+            frame_number += 1
+            
+            if moved <= MOVEMENT_THRESHOLD:
+                print(f"{scenario_name} - Simulation {sim + 1} settled after {frame_number} frames (low movement)")
+                break
+            
+            pygame.display.flip()
+        
+        if frame_number == MAX_FRAMES:
+            print(f"{scenario_name} - Simulation {sim + 1} reached maximum frames ({MAX_FRAMES})")
+        
         surface = draw_particles()
         save_frame(surface, sim_folder, frame_number)
-        
-        moved = update_grid()
-        update_temperature()
-        frame_number += 1
-        
-        if moved <= MOVEMENT_THRESHOLD:
-            print(f"Simulation {sim + 1} settled after {frame_number} frames (low movement)")
-            break
-        
-        pygame.display.flip()
-    
-    if frame_number == MAX_FRAMES:
-        print(f"Simulation {sim + 1} reached maximum frames ({MAX_FRAMES})")
-    
-    # Save one more frame after settling or reaching max frames
-    surface = draw_particles()
-    save_frame(surface, sim_folder, frame_number)
+
+# Curriculum simulations
+elements = [SAND, WATER, PLANT, WOOD, ACID, FIRE, STEAM, SALT, TNT, WAX, OIL, LAVA, STONE]
+
+# Single element simulations
+for element in elements:
+    run_simulation(lambda: create_single_element_scenario(element), f"single_{BASE_COLORS[element]}", 5)
+
+# Two element simulations
+for i, element1 in enumerate(elements):
+    for element2 in elements[i+1:]:
+        run_simulation(lambda: create_two_element_scenario(element1, element2), f"pair_{BASE_COLORS[element1]}_{BASE_COLORS[element2]}", 5)
+
+# All elements simulation
+run_simulation(create_all_elements_scenario, "all_elements", 10)
 
 pygame.quit()
-print("Enhanced data collection complete.")
+print("Curriculum-based data collection complete.")
