@@ -9,7 +9,7 @@ This project implements a Convolutional Neural Network (CNN) model for predictin
 - Training loop with cross-entropy loss and learning rate scheduling
 - Inference function for predicting the next frame
 - Visualization of training progress and results
-- Interactive script to run the trained model
+- Interactive Pygame script to run the trained model
 
 ## Requirements
 
@@ -20,18 +20,18 @@ This project implements a Convolutional Neural Network (CNN) model for predictin
 - matplotlib
 - Pillow
 - tqdm
+- Pygame
 
 ## Installation
 
 1. Clone this repository:
    ```
-   git clone https://github.com/yourusername/falling-sand-cnn.git
-   cd falling-sand-cnn
+   git clone https://github.com/ruapotato/AISand.git
+   cd AISand
    ```
-
 2. Install the required packages:
    ```
-   pip install torch torchvision numpy matplotlib pillow tqdm
+   pip install torch torchvision numpy matplotlib pillow tqdm pygame
    ```
 
 ## Usage
@@ -39,47 +39,48 @@ This project implements a Convolutional Neural Network (CNN) model for predictin
 ### Training the Model
 
 1. Prepare your dataset:
-   Place your falling sand simulation frames in a directory structure as expected by the `SandDataset` class.
-
+   ```
+   ./gather.py
+   ```
 2. Run the training script:
    ```
-   python train_cellular_automation.py
+   python train.py
    ```
-
-3. The script will train the model, save the best model, and generate visualizations.
-
-4. Check the following output files:
-   - `best_sand_model.pth`: The best performing model weights
-   - `loss_plot.png`: A plot of training and validation losses
-   - `prediction_comparison.png`: A visual comparison of input, true next frame, and predicted next frame
+3. The script will train the model and save the best model.
 
 ### Running the Trained Model
 
-After training the model, you can interact with it using the `play.py` script:
+After training the model, you can interact with it using the `play_v2.py` script:
 
-1. Ensure you have a trained model (`best_sand_model.pth`) in your project directory.
-
+1. Ensure you have a trained model (`best_improved_sand_model.pth`) in your project directory.
 2. Run the play script:
    ```
    python play.py
    ```
-
-3. Follow the on-screen instructions to interact with the model and see predictions for falling sand simulations.
+3. Use the mouse to draw particles and observe the model's predictions in real-time.
+4. Use number keys 1-9 and 0, o, l, s to select different particle types.
+5. Use the mouse wheel to adjust brush size.
+6. Press 'c' to clear the screen.
 
 ## Customization
 
-You can modify the following parameters in the `train_cellular_automation.py` file:
+You can modify the following parameters in the training script:
 - `num_epochs`: Number of training epochs
 - Learning rate and scheduler parameters in the `train_model` function
-- Model architecture in the `CellularAutomatonCNN` class
+- Model architecture in the `ImprovedSandModel` class
 - Batch size and other DataLoader parameters
 
 ## Model Architecture
 
-The model uses a series of convolutional layers with batch normalization:
-1. Input layer: 7 channels (one-hot encoded cell types)
+The improved model uses a series of convolutional layers with batch normalization:
+1. Input layer: 14 channels (one-hot encoded cell types)
 2. Hidden layers: 64 -> 128 -> 64 channels
-3. Output layer: 7 channels (predicted cell types)
+3. Output layer: 14 channels (predicted cell types)
+
+## Particle Types
+
+The simulation includes the following particle types:
+EMPTY, SAND, WATER, PLANT, WOOD, ACID, FIRE, STEAM, SALT, TNT, WAX, OIL, LAVA, STONE
 
 ## License
 
@@ -103,4 +104,5 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 ## Acknowledgments
 
 This project adapts convolutional neural networks for predicting falling sand simulations.
+Thanks to https://code.google.com/archive/p/fallingsand-python/
 Claude AI (https://www.anthropic.com) was used for coding assistance and README generation.
