@@ -4,9 +4,9 @@ This project implements a Convolutional Neural Network (CNN) model for predictin
 
 ## Features
 
-- Custom dataset loader for falling sand simulation frames
+- Custom dataset loader for falling sand simulation frames with dynamic sequence selection
 - CNN-based model architecture
-- Training loop with cross-entropy loss and learning rate scheduling
+- Training loop with cross-entropy loss and Adam optimizer
 - Inference function for predicting the next frame
 - Visualization of training progress and results
 - Interactive Pygame script to run the trained model
@@ -15,11 +15,11 @@ This project implements a Convolutional Neural Network (CNN) model for predictin
 
 - Python 3.7+
 - PyTorch
-- torchvision
 - numpy
-- matplotlib
 - Pillow
 - tqdm
+- psutil
+- matplotlib
 - Pygame
 
 ## Installation
@@ -31,7 +31,7 @@ This project implements a Convolutional Neural Network (CNN) model for predictin
    ```
 2. Install the required packages:
    ```
-   pip install torch torchvision numpy matplotlib pillow tqdm pygame
+   pip install torch numpy pillow tqdm psutil matplotlib pygame
    ```
 
 ## Usage
@@ -44,18 +44,18 @@ This project implements a Convolutional Neural Network (CNN) model for predictin
    ```
 2. Run the training script:
    ```
-   python train.py
+   python train_v3.py
    ```
-3. The script will train the model and save the best model.
+3. The script will train the model and save the best model as 'best_sand_model.pth'.
 
 ### Running the Trained Model
 
-After training the model, you can interact with it using the `play_v2.py` script:
+After training the model, you can interact with it using the `play_v3.py` script:
 
-1. Ensure you have a trained model (`best_improved_sand_model.pth`) in your project directory.
+1. Ensure you have a trained model (`best_sand_model.pth`) in your project directory.
 2. Run the play script:
    ```
-   python play.py
+   python play_v3.py
    ```
 3. Use the mouse to draw particles and observe the model's predictions in real-time.
 4. Use number keys 1-9 and 0, o, l, s to select different particle types.
@@ -65,17 +65,29 @@ After training the model, you can interact with it using the `play_v2.py` script
 ## Customization
 
 You can modify the following parameters in the training script:
+
 - `num_epochs`: Number of training epochs
-- Learning rate and scheduler parameters in the `train_model` function
-- Model architecture in the `ImprovedSandModel` class
-- Batch size and other DataLoader parameters
+- `batch_size`: Batch size for training
+- `top_percent`: Percentage of most dynamic sequences to use (default: 0.25 for top 25%)
+- Model architecture in the `SimpleSandModel` class
+- Optimizer parameters in the `train_model` function
 
 ## Model Architecture
 
-The improved model uses a series of convolutional layers with batch normalization:
+The model uses a series of convolutional layers:
+
 1. Input layer: 14 channels (one-hot encoded cell types)
-2. Hidden layers: 64 -> 128 -> 64 channels
+2. Hidden layers: 32 channels
 3. Output layer: 14 channels (predicted cell types)
+
+## Dataset Preprocessing
+
+The dataset is preprocessed to focus on the most dynamic sequences:
+
+1. Calculate the amount of movement for each sequence of frames.
+2. Rank all sequences based on their movement.
+3. Select the top 25% of sequences with the highest movement.
+4. Use these selected sequences for training and validation.
 
 ## Particle Types
 
