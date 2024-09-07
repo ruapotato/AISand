@@ -9,6 +9,7 @@ import os
 import glob
 from PIL import Image
 import psutil
+import random
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -33,10 +34,13 @@ COLORS = {
     STONE: (128, 128, 128)
 }
 
+ELEMENT_NAMES = ["EMPTY", "SAND", "WATER", "PLANT", "WOOD", "ACID", "FIRE", "STEAM", "SALT", "TNT", "WAX", "OIL", "LAVA", "STONE"]
+
 class CurriculumAutomatonDataset(Dataset):
-    def __init__(self, root_dir, sequence_length=3):
+    def __init__(self, root_dir, sequence_length=3, elements=None):
         self.root_dir = root_dir
         self.sequence_length = sequence_length
+        self.elements = elements
         self.frame_sequences = []
         self._preprocess_dataset()
 
@@ -45,6 +49,17 @@ class CurriculumAutomatonDataset(Dataset):
         scenario_dirs = glob.glob(os.path.join(self.root_dir, "*"))
         
         for scenario_dir in tqdm(scenario_dirs, desc="Processing scenarios"):
+            scenario_name = os.path.basename(scenario_dir)
+            if self.elements is not None:
+                if scenario_name.startswith("single_"):
+                    element_color = scenario_name[7:]
+                    if element_color not in [str(COLORS[e]) for e in self.elements]:
+                        continue
+                elif scenario_name.startswith("pair_"):
+                    element_colors = scenario_name[5:].split('_')
+                    if not any(color in [str(COLORS[e]) for e in self.elements] for color in element_colors):
+                        continue
+            
             simulation_dirs = sorted(glob.glob(os.path.join(scenario_dir, "simulation_*")))
             for sim_dir in simulation_dirs:
                 frames = sorted(glob.glob(os.path.join(sim_dir, "frame_*.png")))
@@ -81,9 +96,8 @@ class EnhancedSandModel(nn.Module):
         self.conv4 = nn.Conv2d(hidden_size, input_channels, kernel_size=3, padding=1)
 
     def forward(self, x):
-        # x shape: (batch, sequence, height, width, channels)
         batch_size, seq_len, height, width, channels = x.shape
-        x = x.permute(0, 1, 4, 2, 3).contiguous()  # (batch, sequence, channels, height, width)
+        x = x.permute(0, 1, 4, 2, 3).contiguous()
         x = x.view(batch_size, seq_len * channels, height, width)
         
         x = torch.relu(self.conv1(x))
@@ -93,17 +107,54 @@ class EnhancedSandModel(nn.Module):
         
         return x
 
-def train_model(model, train_loader, val_loader, num_epochs, device):
+def calculate_element_losses(outputs, targets):
+    element_losses = []
+    for i in range(len(ELEMENT_NAMES)):
+        element_mask = (targets == i)
+        if element_mask.sum() > 0:
+            element_loss = nn.functional.cross_entropy(outputs[:, i:i+1, :, :], targets * element_mask.long())
+            element_losses.append(element_loss.item())
+        else:
+            element_losses.append(0)
+    return element_losses
+
+def train_model_curriculum(model, root_dir, num_epochs, device):
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=5, factor=0.5)
     best_val_loss = float('inf')
     
+    # Start with single elements
+    elements = list(range(1, len(ELEMENT_NAMES)))  # Exclude EMPTY
+    random.shuffle(elements)
+    
     for epoch in range(num_epochs):
+        logger.info(f"Epoch {epoch+1}/{num_epochs}")
+        
+        # Determine which elements to focus on
+        if epoch < num_epochs // 3:
+            focus_elements = elements[:len(elements)//3]
+        elif epoch < num_epochs * 2 // 3:
+            focus_elements = elements[:len(elements)*2//3]
+        else:
+            focus_elements = elements
+        
+        logger.info(f"Focusing on elements: {[ELEMENT_NAMES[e] for e in focus_elements]}")
+        
+        # Create dataset and loaders for this epoch
+        dataset = CurriculumAutomatonDataset(root_dir, sequence_length=3, elements=focus_elements)
+        train_size = int(0.8 * len(dataset))
+        val_size = len(dataset) - train_size
+        train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size])
+        
+        train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, num_workers=4)
+        val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=4)
+        
         model.train()
         train_loss = 0.0
+        train_element_losses = [0.0] * len(ELEMENT_NAMES)
         
-        for input_sequence, target_frame in tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}"):
+        for input_sequence, target_frame in tqdm(train_loader, desc="Training"):
             input_sequence = input_sequence.to(device)
             target_frame = target_frame.argmax(dim=3).long().to(device)
             
@@ -115,11 +166,15 @@ def train_model(model, train_loader, val_loader, num_epochs, device):
             optimizer.step()
             
             train_loss += loss.item()
+            element_losses = calculate_element_losses(outputs, target_frame)
+            train_element_losses = [tl + el for tl, el in zip(train_element_losses, element_losses)]
         
         train_loss /= len(train_loader)
+        train_element_losses = [el / len(train_loader) for el in train_element_losses]
         
         model.eval()
         val_loss = 0.0
+        val_element_losses = [0.0] * len(ELEMENT_NAMES)
         
         with torch.no_grad():
             for input_sequence, target_frame in val_loader:
@@ -128,46 +183,79 @@ def train_model(model, train_loader, val_loader, num_epochs, device):
                 outputs = model(input_sequence)
                 loss = criterion(outputs, target_frame)
                 val_loss += loss.item()
+                element_losses = calculate_element_losses(outputs, target_frame)
+                val_element_losses = [vl + el for vl, el in zip(val_element_losses, element_losses)]
         
         val_loss /= len(val_loader)
+        val_element_losses = [el / len(val_loader) for el in val_element_losses]
         
         scheduler.step(val_loss)
         
-        logger.info(f"Epoch {epoch+1}/{num_epochs}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
+        logger.info(f"Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
         logger.info(f"Memory Usage: {psutil.virtual_memory().percent}%")
+        
+        # Report top 5 problematic elements
+        sorted_elements = sorted(zip(ELEMENT_NAMES, val_element_losses), key=lambda x: x[1], reverse=True)
+        logger.info("Top 5 problematic elements:")
+        for element, loss in sorted_elements[:5]:
+            logger.info(f"{element}: {loss:.4f}")
         
         if val_loss < best_val_loss:
             torch.save(model.state_dict(), 'best_curriculum_sand_model.pth')
             logger.info("Saved new best model")
             best_val_loss = val_loss
+        
+        # Update element order based on losses
+        elements = [e for _, e in sorted(zip(val_element_losses, range(len(ELEMENT_NAMES))), reverse=True)]
+        elements = [e for e in elements if e != EMPTY]  # Keep EMPTY excluded
+
+def test_element(model, element_folder, device):
+    test_dataset = CurriculumAutomatonDataset(element_folder, sequence_length=3)
+    test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False, num_workers=4)
+    
+    model.eval()
+    test_loss = 0.0
+    correct = 0
+    total = 0
+    
+    with torch.no_grad():
+        for input_sequence, target_frame in test_loader:
+            input_sequence = input_sequence.to(device)
+            target_frame = target_frame.argmax(dim=3).long().to(device)
+            outputs = model(input_sequence)
+            loss = nn.functional.cross_entropy(outputs, target_frame)
+            test_loss += loss.item()
+            
+            _, predicted = outputs.max(1)
+            total += target_frame.size(0) * target_frame.size(1) * target_frame.size(2)
+            correct += predicted.eq(target_frame).sum().item()
+    
+    accuracy = 100.0 * correct / total
+    test_loss /= len(test_loader)
+    
+    return test_loss, accuracy
 
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
 
-    dataset = CurriculumAutomatonDataset("curriculum_falling_sand_frames", sequence_length=3)
-    
-    if len(dataset) == 0:
-        logger.error("No valid images found in the dataset. Please check your image files and paths.")
-        return
-
-    train_size = int(0.8 * len(dataset))
-    val_size = len(dataset) - train_size
-    train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size])
-    
-    logger.info(f"Training set size: {len(train_dataset)}")
-    logger.info(f"Validation set size: {len(val_dataset)}")
-
-    batch_size = 32
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4)
-
     model = EnhancedSandModel(input_channels=14, hidden_size=64).to(device)
     
     num_epochs = 100
-    train_model(model, train_loader, val_loader, num_epochs, device)
+    train_model_curriculum(model, "curriculum_falling_sand_frames", num_epochs, device)
     
-    logger.info("Training complete.")
+    logger.info("Training complete. Testing individual elements...")
+
+    # Test individual elements
+    for element_name, color in COLORS.items():
+        element_folder = f"curriculum_falling_sand_frames/single_{color}"
+        if os.path.exists(element_folder):
+            test_loss, accuracy = test_element(model, element_folder, device)
+            logger.info(f"{ELEMENT_NAMES[element_name]} - Test Loss: {test_loss:.4f}, Accuracy: {accuracy:.2f}%")
+        else:
+            logger.warning(f"Folder not found for {ELEMENT_NAMES[element_name]}")
+
+    logger.info("All tests complete.")
 
 if __name__ == "__main__":
     main()

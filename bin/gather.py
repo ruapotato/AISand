@@ -4,7 +4,6 @@ import random
 import os
 from PIL import Image
 import scipy.signal
-import multiprocessing
 import argparse
 
 # Initialize Pygame
@@ -115,10 +114,19 @@ def create_all_elements_scenario():
         else:
             num_circles = random.randint(3, 6)
             for _ in range(num_circles):
-                radius = random.randint(10, 20)
+                radius = min(random.randint(5, 10), band_height // 2 - 1)  # Ensure radius fits within band
                 center_x = random.randint(radius, WIDTH - radius)
-                center_y = random.randint(i * band_height + radius, (i + 1) * band_height - radius)
-                create_circle_shape(element, center_x, center_y, radius)
+                min_y = max(i * band_height + radius, 0)
+                max_y = min((i + 1) * band_height - radius, HEIGHT - 1)
+                
+                if min_y < max_y:
+                    center_y = random.randint(min_y, max_y)
+                    create_circle_shape(element, center_x, center_y, radius)
+                else:
+                    # Fallback to creating a small rectangle if circle doesn't fit
+                    rect_height = min(band_height, 5)
+                    rect_y = i * band_height + (band_height - rect_height) // 2
+                    create_square_shape(element, center_x - radius, rect_y, radius * 2, rect_height)
 
 def update_temperature():
     global temperature_grid
@@ -201,7 +209,7 @@ def update_fire(x, y):
         for dy in [-1, 0, 1]:
             nx, ny = x + dx, y + dy
             if 0 <= nx < WIDTH and 0 <= ny < HEIGHT:
-                if element_grid[nx, ny] in [WOOD, PLANT, OIL, TNT] and random.random() < 0.1:
+                if element_grid[nx, ny] in [WOOD, PLANT, OIL] and random.random() < 0.1:
                     element_grid[nx, ny] = FIRE
                     temperature_grid[nx, ny] = random.uniform(800, 1000)
                     moved = True
@@ -210,6 +218,9 @@ def update_fire(x, y):
                     temperature_grid[x, y] = 100
                     element_grid[nx, ny] = EMPTY
                     temperature_grid[nx, ny] = 100
+                    return True
+                elif element_grid[nx, ny] == TNT and random.random() < 0.05:
+                    explode(nx, ny)
                     return True
     if random.random() < 0.05:
         element_grid[x, y] = EMPTY
@@ -232,10 +243,73 @@ def update_lava(x, y):
                 element_grid[nx, ny] = FIRE
                 temperature_grid[nx, ny] = random.uniform(800, 1000)
                 return True
+            elif element_grid[nx, ny] == WATER:
+                element_grid[nx, ny] = STEAM
+                temperature_grid[nx, ny] = 100
+                element_grid[x, y] = STONE
+                temperature_grid[x, y] = 700
+                return True
     return False
+
+def update_acid(x, y):
+    global element_grid, temperature_grid
+    if update_liquid(x, y, ACID):
+        return True
+    for dx, dy in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
+        nx, ny = x + dx, y + dy
+        if 0 <= nx < WIDTH and 0 <= ny < HEIGHT:
+            if element_grid[nx, ny] in [WOOD, PLANT, STONE] and random.random() < 0.1:
+                element_grid[nx, ny] = EMPTY
+                element_grid[x, y] = EMPTY
+                return True
+    return False
+
+def update_steam(x, y):
+    global element_grid, temperature_grid
+    if x > 0 and element_grid[x - 1, y] == EMPTY:
+        element_grid[x - 1, y] = STEAM
+        element_grid[x, y] = EMPTY
+        temperature_grid[x - 1, y] = temperature_grid[x, y]
+        return True
+    elif y > 0 and element_grid[x, y - 1] == EMPTY:
+        element_grid[x, y - 1] = STEAM
+        element_grid[x, y] = EMPTY
+        temperature_grid[x, y - 1] = temperature_grid[x, y]
+        return True
+    elif y < HEIGHT - 1 and element_grid[x, y + 1] == EMPTY:
+        element_grid[x, y + 1] = STEAM
+        element_grid[x, y] = EMPTY
+        temperature_grid[x, y + 1] = temperature_grid[x, y]
+        return True
+    if temperature_grid[x, y] < 100 and random.random() < 0.1:
+        element_grid[x, y] = WATER
+        return True
+    return False
+
+def explode(x, y):
+    global element_grid, temperature_grid
+    radius = 10
+    for dx in range(-radius, radius + 1):
+        for dy in range(-radius, radius + 1):
+            if dx*dx + dy*dy <= radius*radius:
+                nx, ny = x + dx, y + dy
+                if 0 <= nx < WIDTH and 0 <= ny < HEIGHT:
+                    if random.random() < 0.7:
+                        element_grid[nx, ny] = FIRE
+                        temperature_grid[nx, ny] = random.uniform(800, 1200)
+                    else:
+                        element_grid[nx, ny] = EMPTY
+                        temperature_grid[nx, ny] = random.uniform(400, 600)
 
 def update_grid():
     moved = 0
+    # Update steam from right to left
+    for x in range(WIDTH - 1, -1, -1):
+        for y in range(HEIGHT):
+            if element_grid[x, y] == STEAM:
+                moved += update_steam(x, y)
+    
+    # Update other elements
     for x in range(WIDTH):
         for y in range(HEIGHT - 1, -1, -1):
             if element_grid[x, y] == SAND:
@@ -248,7 +322,12 @@ def update_grid():
                 moved += update_fire(x, y)
             elif element_grid[x, y] == LAVA:
                 moved += update_lava(x, y)
+            elif element_grid[x, y] == ACID:
+                moved += update_acid(x, y)
+            elif element_grid[x, y] == OIL:
+                moved += update_liquid(x, y, OIL)
     return moved
+
 
 def draw_particles(screen):
     surface = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
@@ -273,12 +352,15 @@ def save_frame(surface, folder, frame_number):
     image = Image.fromarray(rgba_array, 'RGBA')
     image.save(f"{folder}/frame_{frame_number:04d}.png")
 
-def run_simulation(scenario_func, scenario_name, num_images, process_id):
+def run_simulation(scenario_func, scenario_name, num_images, process_id, output_dir):
     # Set up the display for this process
     screen = pygame.display.set_mode((WIDTH, HEIGHT))
     pygame.display.set_caption(f"Falling Sand Simulation - Process {process_id}")
 
-    main_folder = f"curriculum_falling_sand_frames/{scenario_name}"
+    if output_dir:
+        main_folder = f"curriculum_falling_sand_frames/{output_dir}/{scenario_name}"
+    else:
+        main_folder = f"curriculum_falling_sand_frames/{scenario_name}"
     os.makedirs(main_folder, exist_ok=True)
 
     MOVEMENT_THRESHOLD = 30
@@ -320,8 +402,6 @@ def run_simulation(scenario_func, scenario_name, num_images, process_id):
 
     print(f"{scenario_name} - Process {process_id} - Simulation complete. {frame_number} total frames, {total_scenarios} scenarios")
 
-
-
 def main(args):
     total_images_per_element = args.images
     elements = [SAND, WATER, PLANT, WOOD, ACID, FIRE, STEAM, SALT, TNT, WAX, OIL, LAVA, STONE]
@@ -330,18 +410,18 @@ def main(args):
         for element in elements[args.start:args.end]:
             scenario_func = lambda: create_random_setup(element)
             scenario_name = f"single_{BASE_COLORS[element]}"
-            run_simulation(scenario_func, scenario_name, total_images_per_element, args.process_id)
+            run_simulation(scenario_func, scenario_name, total_images_per_element, args.process_id, args.output_dir)
 
     elif args.segment == 'pair':
         for i, element1 in enumerate(elements[args.start:args.end]):
             for element2 in elements[i+1:]:
                 scenario_func = lambda: create_two_element_scenario(element1, element2)
                 scenario_name = f"pair_{BASE_COLORS[element1]}_{BASE_COLORS[element2]}"
-                run_simulation(scenario_func, scenario_name, total_images_per_element, args.process_id)
+                run_simulation(scenario_func, scenario_name, total_images_per_element, args.process_id, args.output_dir)
 
     elif args.segment == 'all':
         scenario_name = "all_elements"
-        run_simulation(create_all_elements_scenario, scenario_name, total_images_per_element, args.process_id)
+        run_simulation(create_all_elements_scenario, scenario_name, total_images_per_element, args.process_id, args.output_dir)
 
     print(f"Simulation segment {args.segment} (Process {args.process_id}) complete.")
 
@@ -352,6 +432,7 @@ if __name__ == "__main__":
     parser.add_argument('--end', type=int, default=13, help="End index for elements")
     parser.add_argument('--images', type=int, default=1000, help="Number of images to generate")
     parser.add_argument('--process_id', type=int, required=True, help="Process ID for this instance")
+    parser.add_argument('--output_dir', type=str, default='', help="Output directory for the simulation")
     args = parser.parse_args()
 
     main(args)
