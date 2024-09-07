@@ -4,6 +4,8 @@ import random
 import os
 from PIL import Image
 import scipy.signal
+import multiprocessing
+import argparse
 
 # Initialize Pygame
 pygame.init()
@@ -34,15 +36,12 @@ BASE_COLORS = {
     STONE: (128, 128, 128)
 }
 
-# Set up the display
-screen = pygame.display.set_mode((WIDTH, HEIGHT))
-pygame.display.set_caption("Curriculum-based Falling Sand Simulation")
-
-# Create the grids
+# Global variables for grids
 element_grid = np.zeros((WIDTH, HEIGHT), dtype=int)
 temperature_grid = np.zeros((WIDTH, HEIGHT), dtype=float)
 
 def create_square_shape(element, x, y, width, height):
+    global element_grid, temperature_grid
     for dx in range(width):
         for dy in range(height):
             nx, ny = x + dx, y + dy
@@ -54,6 +53,7 @@ def create_square_shape(element, x, y, width, height):
                     temperature_grid[nx, ny] = 20.0  # Room temperature
 
 def create_circle_shape(element, center_x, center_y, radius):
+    global element_grid, temperature_grid
     for dx in range(-radius, radius + 1):
         for dy in range(-radius, radius + 1):
             if dx*dx + dy*dy <= radius*radius:
@@ -65,7 +65,7 @@ def create_circle_shape(element, center_x, center_y, radius):
                     else:
                         temperature_grid[nx, ny] = 20.0  # Room temperature
 
-def create_single_element_scenario(element):
+def create_random_setup(element):
     global element_grid, temperature_grid
     element_grid = np.zeros((WIDTH, HEIGHT), dtype=int)
     temperature_grid = np.full((WIDTH, HEIGHT), 20.0)
@@ -121,11 +121,11 @@ def create_all_elements_scenario():
                 create_circle_shape(element, center_x, center_y, radius)
 
 def update_temperature():
+    global temperature_grid
     kernel = np.array([[0.05, 0.1, 0.05],
                        [0.1, 0.4, 0.1],
                        [0.05, 0.1, 0.05]])
     
-    global temperature_grid
     temperature_grid = scipy.signal.convolve2d(temperature_grid, kernel, mode='same', boundary='wrap')
     temperature_grid = np.maximum(20, temperature_grid * 0.99)
 
@@ -136,6 +136,7 @@ def get_color(x, y):
     return base_color + (alpha,)
 
 def update_movable(x, y, element):
+    global element_grid, temperature_grid
     if y < HEIGHT - 1:
         if element_grid[x, y + 1] == EMPTY:
             element_grid[x, y + 1] = element
@@ -155,6 +156,7 @@ def update_movable(x, y, element):
     return False
 
 def update_liquid(x, y, element):
+    global element_grid, temperature_grid
     if update_movable(x, y, element):
         return True
     else:
@@ -167,6 +169,7 @@ def update_liquid(x, y, element):
     return False
 
 def update_water(x, y):
+    global element_grid, temperature_grid
     if update_liquid(x, y, WATER):
         return True
     if temperature_grid[x, y] >= 100 and random.random() < 0.1:
@@ -176,6 +179,7 @@ def update_water(x, y):
     return False
 
 def update_plant(x, y):
+    global element_grid, temperature_grid
     growth_chance = 0.05
     for dx, dy in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
         nx, ny = x + dx, y + dy
@@ -191,6 +195,7 @@ def update_plant(x, y):
     return False
 
 def update_fire(x, y):
+    global element_grid, temperature_grid
     moved = False
     for dx in [-1, 0, 1]:
         for dy in [-1, 0, 1]:
@@ -213,6 +218,7 @@ def update_fire(x, y):
     return moved
 
 def update_lava(x, y):
+    global element_grid, temperature_grid
     if update_liquid(x, y, LAVA):
         return True
     if temperature_grid[x, y] < 700:
@@ -244,7 +250,7 @@ def update_grid():
                 moved += update_lava(x, y)
     return moved
 
-def draw_particles():
+def draw_particles(screen):
     surface = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
     for x in range(WIDTH):
         for y in range(HEIGHT):
@@ -267,55 +273,85 @@ def save_frame(surface, folder, frame_number):
     image = Image.fromarray(rgba_array, 'RGBA')
     image.save(f"{folder}/frame_{frame_number:04d}.png")
 
-def run_simulation(scenario_func, scenario_name, num_simulations):
+def run_simulation(scenario_func, scenario_name, num_images, process_id):
+    # Set up the display for this process
+    screen = pygame.display.set_mode((WIDTH, HEIGHT))
+    pygame.display.set_caption(f"Falling Sand Simulation - Process {process_id}")
+
     main_folder = f"curriculum_falling_sand_frames/{scenario_name}"
     os.makedirs(main_folder, exist_ok=True)
 
-    MAX_FRAMES = 500  # Increased from 100 to 500
     MOVEMENT_THRESHOLD = 30
+    MIN_FRAMES = 3
+    MAX_FRAMES = 100
 
-    for sim in range(num_simulations):
-        sim_folder = os.path.join(main_folder, f"simulation_{sim:03d}")
-        os.makedirs(sim_folder, exist_ok=True)
-        
+    frame_number = 0
+    total_scenarios = 0
+
+    while frame_number < num_images:
         scenario_func()
+        total_scenarios += 1
         
-        frame_number = 0
+        scenario_frames = 0
+        scenario_movement = 0
         
-        while frame_number < MAX_FRAMES:
-            surface = draw_particles()
-            save_frame(surface, sim_folder, frame_number)
+        while scenario_frames < MAX_FRAMES and frame_number < num_images:
+            surface = draw_particles(screen)
+            
+            sim_folder = os.path.join(main_folder, f"simulation_{total_scenarios:03d}")
+            os.makedirs(sim_folder, exist_ok=True)
+            save_frame(surface, sim_folder, scenario_frames)
             
             moved = update_grid()
             update_temperature()
             frame_number += 1
-            
-            if moved <= MOVEMENT_THRESHOLD:
-                print(f"{scenario_name} - Simulation {sim + 1} settled after {frame_number} frames (low movement)")
-                break
+            scenario_frames += 1
+            scenario_movement += moved
             
             pygame.display.flip()
-        
-        if frame_number == MAX_FRAMES:
-            print(f"{scenario_name} - Simulation {sim + 1} reached maximum frames ({MAX_FRAMES})")
-        
-        surface = draw_particles()
-        save_frame(surface, sim_folder, frame_number)
 
-# Curriculum simulations
-elements = [SAND, WATER, PLANT, WOOD, ACID, FIRE, STEAM, SALT, TNT, WAX, OIL, LAVA, STONE]
+            if scenario_frames >= MIN_FRAMES and moved <= MOVEMENT_THRESHOLD:
+                break
 
-# Single element simulations
-for element in elements:
-    run_simulation(lambda: create_single_element_scenario(element), f"single_{BASE_COLORS[element]}", 5)
+        print(f"{scenario_name} - Process {process_id} - Scenario {total_scenarios}: {scenario_frames} frames, {scenario_movement} total movement")
 
-# Two element simulations
-for i, element1 in enumerate(elements):
-    for element2 in elements[i+1:]:
-        run_simulation(lambda: create_two_element_scenario(element1, element2), f"pair_{BASE_COLORS[element1]}_{BASE_COLORS[element2]}", 5)
+        if frame_number >= num_images:
+            break
 
-# All elements simulation
-run_simulation(create_all_elements_scenario, "all_elements", 10)
+    print(f"{scenario_name} - Process {process_id} - Simulation complete. {frame_number} total frames, {total_scenarios} scenarios")
 
-pygame.quit()
-print("Curriculum-based data collection complete.")
+
+
+def main(args):
+    total_images_per_element = args.images
+    elements = [SAND, WATER, PLANT, WOOD, ACID, FIRE, STEAM, SALT, TNT, WAX, OIL, LAVA, STONE]
+
+    if args.segment == 'single':
+        for element in elements[args.start:args.end]:
+            scenario_func = lambda: create_random_setup(element)
+            scenario_name = f"single_{BASE_COLORS[element]}"
+            run_simulation(scenario_func, scenario_name, total_images_per_element, args.process_id)
+
+    elif args.segment == 'pair':
+        for i, element1 in enumerate(elements[args.start:args.end]):
+            for element2 in elements[i+1:]:
+                scenario_func = lambda: create_two_element_scenario(element1, element2)
+                scenario_name = f"pair_{BASE_COLORS[element1]}_{BASE_COLORS[element2]}"
+                run_simulation(scenario_func, scenario_name, total_images_per_element, args.process_id)
+
+    elif args.segment == 'all':
+        scenario_name = "all_elements"
+        run_simulation(create_all_elements_scenario, scenario_name, total_images_per_element, args.process_id)
+
+    print(f"Simulation segment {args.segment} (Process {args.process_id}) complete.")
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Run Falling Sand Simulation")
+    parser.add_argument('--segment', choices=['single', 'pair', 'all'], required=True, help="Simulation segment to run")
+    parser.add_argument('--start', type=int, default=0, help="Start index for elements")
+    parser.add_argument('--end', type=int, default=13, help="End index for elements")
+    parser.add_argument('--images', type=int, default=1000, help="Number of images to generate")
+    parser.add_argument('--process_id', type=int, required=True, help="Process ID for this instance")
+    args = parser.parse_args()
+
+    main(args)
