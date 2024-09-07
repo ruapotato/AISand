@@ -59,15 +59,26 @@ class CurriculumAutomatonDataset(Dataset):
                     element_colors = scenario_name[5:].split('_')
                     if not any(color in [str(COLORS[e]) for e in self.elements] for color in element_colors):
                         continue
+                elif scenario_name != "all_elements" and "all_elements" not in self.elements:
+                    continue
             
-            simulation_dirs = sorted(glob.glob(os.path.join(scenario_dir, "simulation_*")))
-            for sim_dir in simulation_dirs:
-                frames = sorted(glob.glob(os.path.join(sim_dir, "frame_*.png")))
-                for i in range(len(frames) - self.sequence_length):
-                    sequence = frames[i:i+self.sequence_length+1]
-                    self.frame_sequences.append(sequence)
+            if scenario_name == "all_elements":
+                instance_dirs = glob.glob(os.path.join(scenario_dir, "all_elements_instance_*"))
+                for instance_dir in instance_dirs:
+                    simulation_dirs = sorted(glob.glob(os.path.join(instance_dir, "simulation_*")))
+                    self._process_simulation_dirs(simulation_dirs)
+            else:
+                simulation_dirs = sorted(glob.glob(os.path.join(scenario_dir, "simulation_*")))
+                self._process_simulation_dirs(simulation_dirs)
         
         logger.info(f"Indexing complete. Total frame sequences: {len(self.frame_sequences)}")
+
+    def _process_simulation_dirs(self, simulation_dirs):
+        for sim_dir in simulation_dirs:
+            frames = sorted(glob.glob(os.path.join(sim_dir, "frame_*.png")))
+            for i in range(len(frames) - self.sequence_length):
+                sequence = frames[i:i+self.sequence_length+1]
+                self.frame_sequences.append(sequence)
 
     def __len__(self):
         return len(self.frame_sequences)
@@ -137,9 +148,9 @@ def train_model_curriculum(model, root_dir, num_epochs, device):
         elif epoch < num_epochs * 2 // 3:
             focus_elements = elements[:len(elements)*2//3]
         else:
-            focus_elements = elements
+            focus_elements = elements + ["all_elements"]
         
-        logger.info(f"Focusing on elements: {[ELEMENT_NAMES[e] for e in focus_elements]}")
+        logger.info(f"Focusing on elements: {[ELEMENT_NAMES[e] if isinstance(e, int) else e for e in focus_elements]}")
         
         # Create dataset and loaders for this epoch
         dataset = CurriculumAutomatonDataset(root_dir, sequence_length=3, elements=focus_elements)
@@ -244,7 +255,7 @@ def main():
     num_epochs = 100
     train_model_curriculum(model, "curriculum_falling_sand_frames", num_epochs, device)
     
-    logger.info("Training complete. Testing individual elements...")
+    logger.info("Training complete. Testing individual elements and all elements...")
 
     # Test individual elements
     for element_name, color in COLORS.items():
@@ -254,6 +265,14 @@ def main():
             logger.info(f"{ELEMENT_NAMES[element_name]} - Test Loss: {test_loss:.4f}, Accuracy: {accuracy:.2f}%")
         else:
             logger.warning(f"Folder not found for {ELEMENT_NAMES[element_name]}")
+
+    # Test all elements
+    all_elements_folder = "curriculum_falling_sand_frames/all_elements"
+    if os.path.exists(all_elements_folder):
+        test_loss, accuracy = test_element(model, all_elements_folder, device)
+        logger.info(f"All Elements - Test Loss: {test_loss:.4f}, Accuracy: {accuracy:.2f}%")
+    else:
+        logger.warning("Folder not found for All Elements")
 
     logger.info("All tests complete.")
 
