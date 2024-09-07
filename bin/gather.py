@@ -86,18 +86,95 @@ def create_two_element_scenario(element1, element2):
     element_grid = np.zeros((WIDTH, HEIGHT), dtype=int)
     temperature_grid = np.full((WIDTH, HEIGHT), 20.0)
     
-    for element in [element1, element2]:
-        if random.choice([True, False]):  # Randomly choose between square and circle
-            shape_width = random.randint(30, 50)
-            shape_height = random.randint(30, 50)
-            x = random.randint(0, WIDTH - shape_width)
-            y = random.randint(0, HEIGHT - shape_height)
-            create_square_shape(element, x, y, shape_width, shape_height)
+    # Decide on shape and size for both elements
+    shape1 = random.choice(['square', 'circle'])
+    shape2 = random.choice(['square', 'circle'])
+    
+    if shape1 == 'square':
+        width1 = random.randint(30, 50)
+        height1 = random.randint(30, 50)
+    else:
+        radius1 = random.randint(15, 25)
+        
+    if shape2 == 'square':
+        width2 = random.randint(30, 50)
+        height2 = random.randint(30, 50)
+    else:
+        radius2 = random.randint(15, 25)
+    
+    # Decide on placement strategy
+    placement = random.choice(['vertical', 'horizontal'])
+    
+    if placement == 'vertical':
+        # Place elements vertically
+        if shape1 == 'square':
+            x1 = random.randint(0, WIDTH - width1)
+            y1 = 0
+            create_square_shape(element1, x1, y1, width1, height1)
+            
+            if shape2 == 'square':
+                x2 = max(0, min(x1 + random.randint(-20, 20), WIDTH - width2))
+                y2 = HEIGHT - height2
+            else:
+                x2 = max(radius2, min(x1 + random.randint(-20, 20), WIDTH - radius2))
+                y2 = HEIGHT - radius2
         else:
-            radius = random.randint(15, 25)
-            center_x = random.randint(radius, WIDTH - radius)
-            center_y = random.randint(radius, HEIGHT - radius)
-            create_circle_shape(element, center_x, center_y, radius)
+            x1 = random.randint(radius1, WIDTH - radius1)
+            y1 = radius1
+            create_circle_shape(element1, x1, y1, radius1)
+            
+            if shape2 == 'square':
+                x2 = max(0, min(x1 + random.randint(-20, 20), WIDTH - width2))
+                y2 = HEIGHT - height2
+            else:
+                x2 = max(radius2, min(x1 + random.randint(-20, 20), WIDTH - radius2))
+                y2 = HEIGHT - radius2
+    else:
+        # Place elements horizontally
+        if shape1 == 'square':
+            x1 = 0
+            y1 = random.randint(0, HEIGHT - height1)
+            create_square_shape(element1, x1, y1, width1, height1)
+            
+            if shape2 == 'square':
+                x2 = WIDTH - width2
+                y2 = max(0, min(y1 + random.randint(-20, 20), HEIGHT - height2))
+            else:
+                x2 = WIDTH - radius2
+                y2 = max(radius2, min(y1 + random.randint(-20, 20), HEIGHT - radius2))
+        else:
+            x1 = radius1
+            y1 = random.randint(radius1, HEIGHT - radius1)
+            create_circle_shape(element1, x1, y1, radius1)
+            
+            if shape2 == 'square':
+                x2 = WIDTH - width2
+                y2 = max(0, min(y1 + random.randint(-20, 20), HEIGHT - height2))
+            else:
+                x2 = WIDTH - radius2
+                y2 = max(radius2, min(y1 + random.randint(-20, 20), HEIGHT - radius2))
+    
+    # Create the second shape
+    if shape2 == 'square':
+        create_square_shape(element2, x2, y2, width2, height2)
+    else:
+        create_circle_shape(element2, x2, y2, radius2)
+
+    # Ensure elements are touching by filling the gap if necessary
+    if placement == 'vertical':
+        min_y1 = y1 if shape1 == 'square' else y1 - radius1
+        max_y1 = y1 + height1 if shape1 == 'square' else y1 + radius1
+        min_y2 = y2 if shape2 == 'square' else y2 - radius2
+        for y in range(max_y1, min_y2):
+            element_grid[x1, y] = element1
+            temperature_grid[x1, y] = 20.0 if element1 not in [FIRE, LAVA] else random.uniform(800, 1200)
+    else:
+        min_x1 = x1 if shape1 == 'square' else x1 - radius1
+        max_x1 = x1 + width1 if shape1 == 'square' else x1 + radius1
+        min_x2 = x2 if shape2 == 'square' else x2 - radius2
+        for x in range(max_x1, min_x2):
+            element_grid[x, y1] = element1
+            temperature_grid[x, y1] = 20.0 if element1 not in [FIRE, LAVA] else random.uniform(800, 1200)
 
 def create_all_elements_scenario():
     global element_grid, temperature_grid
