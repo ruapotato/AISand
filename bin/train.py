@@ -51,25 +51,22 @@ class CurriculumAutomatonDataset(Dataset):
         for scenario_dir in tqdm(scenario_dirs, desc="Processing scenarios"):
             scenario_name = os.path.basename(scenario_dir)
             if self.elements is not None:
-                if scenario_name.startswith("single_"):
+                if 'all_elements' in self.elements:
+                    if scenario_name.startswith("all_elements_instance_"):
+                        self._process_all_elements_instance(scenario_dir)
+                elif scenario_name.startswith("single_"):
                     element_color = scenario_name[7:]
-                    if element_color not in [str(COLORS[e]) for e in self.elements]:
+                    if element_color not in [str(COLORS[e]) for e in self.elements if e != 'all_elements']:
                         continue
                 elif scenario_name.startswith("pair_"):
                     element_colors = scenario_name[5:].split('_')
-                    if not any(color in [str(COLORS[e]) for e in self.elements] for color in element_colors):
+                    if not any(color in [str(COLORS[e]) for e in self.elements if e != 'all_elements'] for color in element_colors):
                         continue
-                elif scenario_name.startswith("all_elements_instance_"):
-                    if "all_elements" not in self.elements:
-                        continue
-                elif scenario_name != "all_elements" and "all_elements" not in self.elements:
+                else:
                     continue
             
-            if scenario_name.startswith("all_elements_instance_"):
-                self._process_all_elements_instance(scenario_dir)
-            else:
-                simulation_dirs = sorted(glob.glob(os.path.join(scenario_dir, "simulation_*")))
-                self._process_simulation_dirs(simulation_dirs)
+            simulation_dirs = sorted(glob.glob(os.path.join(scenario_dir, "simulation_*")))
+            self._process_simulation_dirs(simulation_dirs)
         
         logger.info(f"Indexing complete. Total frame sequences: {len(self.frame_sequences)}")
 
@@ -268,7 +265,7 @@ def main():
 
     model = EnhancedSandModel(input_channels=14, hidden_size=64).to(device)
     
-    num_epochs = 100
+    num_epochs = 20  # Shortened to 20 epochs
     train_model_curriculum(model, "curriculum_falling_sand_frames", num_epochs, device)
     
     logger.info("Training complete. Testing individual elements and all elements...")
