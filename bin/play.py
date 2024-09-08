@@ -2,6 +2,7 @@ import pygame
 import numpy as np
 import torch
 import torch.nn as nn
+from collections import deque
 
 # Initialize Pygame
 pygame.init()
@@ -10,6 +11,7 @@ pygame.init()
 WIDTH, HEIGHT = 255, 255
 CELL_SIZE = 1
 GRID_WIDTH, GRID_HEIGHT = WIDTH, HEIGHT
+SEQUENCE_LENGTH = 3
 
 # Colors and element types
 EMPTY, SAND, WATER, PLANT, WOOD, ACID, FIRE, STEAM, SALT, TNT, WAX, OIL, LAVA, STONE = range(14)
@@ -34,53 +36,66 @@ COLORS = {
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
 pygame.display.set_caption("Enhanced Falling Sand Game (New Model Prediction)")
 
-# Create the grid
-grid = np.zeros((GRID_WIDTH, GRID_HEIGHT, 14), dtype=np.float32)
-grid[:,:,EMPTY] = 1  # Initialize with all cells empty
+# Create the grid and frame history
+grid = np.zeros((GRID_HEIGHT, GRID_WIDTH), dtype=int)
+frame_history = deque([grid.copy() for _ in range(SEQUENCE_LENGTH)], maxlen=SEQUENCE_LENGTH)
 
 # Define the new model architecture
 class EnhancedSandModel(nn.Module):
     def __init__(self, input_channels=14, hidden_size=64):
         super(EnhancedSandModel, self).__init__()
+        self.embedding = nn.Embedding(input_channels, input_channels)
         self.conv1 = nn.Conv2d(input_channels * 3, hidden_size, kernel_size=3, padding=1)
         self.conv2 = nn.Conv2d(hidden_size, hidden_size, kernel_size=3, padding=1)
         self.conv3 = nn.Conv2d(hidden_size, hidden_size, kernel_size=3, padding=1)
         self.conv4 = nn.Conv2d(hidden_size, input_channels, kernel_size=3, padding=1)
 
     def forward(self, x):
+        batch_size, seq_len, height, width = x.shape
+        x = self.embedding(x)
+        x = x.permute(0, 1, 4, 2, 3)
+        x = x.reshape(batch_size, seq_len * x.shape[2], height, width)
+        
         x = torch.relu(self.conv1(x))
         x = torch.relu(self.conv2(x))
         x = torch.relu(self.conv3(x))
         x = self.conv4(x)
+        
         return x
 
 # Load the trained model
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model = EnhancedSandModel(input_channels=14, hidden_size=64).to(device)
-model.load_state_dict(torch.load('best_curriculum_sand_model.pth', map_location=device))
+model.load_state_dict(torch.load('best_curriculum_sand_model.pth', map_location=device, weights_only=True))
 model.eval()
 
 @torch.no_grad()
-def predict_next_frame(model, current_frame):
-    # Rotate the grid 90 degrees clockwise before prediction
-    current_frame = np.rot90(current_frame, k=-1, axes=(0, 1)).copy()
-    current_frame = current_frame.transpose(2, 0, 1)
-    current_frame = torch.from_numpy(current_frame).unsqueeze(0).float().to(device)
+def predict_next_frame(model, frame_history):
+    # Rotate the grids 90 degrees clockwise before prediction
+    rotated_frames = [np.rot90(frame, k=-1) for frame in frame_history]
     
-    # Repeat the current frame to match the model's input shape
-    current_frame = current_frame.repeat(1, 3, 1, 1)
+    # Stack the frames and convert to tensor
+    input_sequence = np.stack(rotated_frames)
+    input_sequence = torch.from_numpy(input_sequence).unsqueeze(0).long().to(device)
     
-    output = model(current_frame)
+    output = model(input_sequence)
+    output = output.permute(0, 2, 3, 1).contiguous().view(-1, output.shape[1])
+    output = torch.softmax(output, dim=1)
+    output = output.view(GRID_WIDTH, GRID_HEIGHT, -1)
+    
     # Rotate the output back 90 degrees counterclockwise
-    output = torch.rot90(output.squeeze(), k=1, dims=(1, 2))
-    output = torch.softmax(output, dim=0).cpu().numpy()
-    # Ensure the output shape matches the input shape
-    return output.transpose(1, 2, 0)
+    output = np.rot90(output.cpu().numpy(), k=1)
+    return output
 
 def draw_particles(surface, grid):
-    color_grid = np.zeros((GRID_WIDTH, GRID_HEIGHT, 3), dtype=np.uint8)
+    # Create a 3D array of zeros with uint8 dtype
+    color_grid = np.zeros((GRID_HEIGHT, GRID_WIDTH, 3), dtype=np.uint8)
+    
+    # Use numpy's where function to set colors based on grid values
     for i, color in COLORS.items():
-        color_grid += (grid[:,:,i, np.newaxis] * color).astype(np.uint8)
+        mask = (grid == i)
+        color_grid[mask] = color
+    
     pygame.surfarray.blit_array(surface, color_grid)
 
 def create_circular_mask(h, w, center, radius):
@@ -102,15 +117,15 @@ while running:
         elif event.type == pygame.MOUSEBUTTONDOWN:
             if event.button == 1:
                 x, y = pygame.mouse.get_pos()
-                mask = create_circular_mask(GRID_WIDTH, GRID_HEIGHT, (y, x), brush_size)
-                grid[mask, :] = 0
-                grid[mask, current_element] = 1
+                mask = create_circular_mask(GRID_HEIGHT, GRID_WIDTH, (y, x), brush_size)
+                grid[mask] = current_element
+                frame_history[-1] = grid.copy()  # Update the last frame in history
         elif event.type == pygame.MOUSEMOTION:
             if event.buttons[0]:
                 x, y = pygame.mouse.get_pos()
-                mask = create_circular_mask(GRID_WIDTH, GRID_HEIGHT, (y, x), brush_size)
-                grid[mask, :] = 0
-                grid[mask, current_element] = 1
+                mask = create_circular_mask(GRID_HEIGHT, GRID_WIDTH, (y, x), brush_size)
+                grid[mask] = current_element
+                frame_history[-1] = grid.copy()  # Update the last frame in history
         elif event.type == pygame.MOUSEWHEEL:
             brush_size = max(1, min(20, brush_size + event.y))
         elif event.type == pygame.KEYDOWN:
@@ -141,14 +156,19 @@ while running:
             elif event.key == pygame.K_s:
                 current_element = STONE
             elif event.key == pygame.K_c:
-                grid.fill(0)
-                grid[:,:,EMPTY] = 1
+                grid.fill(EMPTY)
+                for i in range(SEQUENCE_LENGTH):
+                    frame_history[i] = grid.copy()
 
     # Update grid using the model
-    new_grid = predict_next_frame(model, grid)
+    new_grid_probs = predict_next_frame(model, frame_history)
+    new_grid = np.argmax(new_grid_probs, axis=-1)
     
-    # Blend the new grid with the old grid to reduce flickering
-    grid = grid * 0.7 + new_grid * 0.3
+    # Update grid (no blending, just use the new predictions)
+    grid = new_grid
+    
+    # Update frame history
+    frame_history.append(grid.copy())
     
     draw_particles(surface, grid)
     screen.blit(surface, (0, 0))
@@ -156,6 +176,6 @@ while running:
     
     fps = clock.get_fps()
     pygame.display.set_caption(f"FPS: {fps:.2f} - Brush Size: {brush_size}")
-    clock.tick()
+    clock.tick(60)  # Cap at 60 FPS
     
 pygame.quit()

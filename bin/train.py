@@ -59,19 +59,25 @@ class CurriculumAutomatonDataset(Dataset):
                     element_colors = scenario_name[5:].split('_')
                     if not any(color in [str(COLORS[e]) for e in self.elements] for color in element_colors):
                         continue
+                elif scenario_name.startswith("all_elements_instance_"):
+                    if "all_elements" not in self.elements:
+                        continue
                 elif scenario_name != "all_elements" and "all_elements" not in self.elements:
                     continue
             
-            if scenario_name == "all_elements":
-                instance_dirs = glob.glob(os.path.join(scenario_dir, "all_elements_instance_*"))
-                for instance_dir in instance_dirs:
-                    simulation_dirs = sorted(glob.glob(os.path.join(instance_dir, "simulation_*")))
-                    self._process_simulation_dirs(simulation_dirs)
+            if scenario_name.startswith("all_elements_instance_"):
+                self._process_all_elements_instance(scenario_dir)
             else:
                 simulation_dirs = sorted(glob.glob(os.path.join(scenario_dir, "simulation_*")))
                 self._process_simulation_dirs(simulation_dirs)
         
         logger.info(f"Indexing complete. Total frame sequences: {len(self.frame_sequences)}")
+
+    def _process_all_elements_instance(self, instance_dir):
+        all_elements_dir = os.path.join(instance_dir, "all_elements")
+        if os.path.exists(all_elements_dir):
+            simulation_dirs = sorted(glob.glob(os.path.join(all_elements_dir, "simulation_*")))
+            self._process_simulation_dirs(simulation_dirs)
 
     def _process_simulation_dirs(self, simulation_dirs):
         for sim_dir in simulation_dirs:
@@ -86,30 +92,38 @@ class CurriculumAutomatonDataset(Dataset):
     def __getitem__(self, idx):
         frame_paths = self.frame_sequences[idx]
         
-        frames = [self.image_to_grid(Image.open(path)) for path in frame_paths]
+        frames = []
+        for path in frame_paths:
+            frame = self.image_to_grid(Image.open(path))
+            frames.append(frame)
+        
         input_sequence = np.stack(frames[:-1])
         target_frame = frames[-1]
-        return torch.from_numpy(input_sequence).float(), torch.from_numpy(target_frame).float()
+        
+        return torch.from_numpy(input_sequence).long(), torch.from_numpy(target_frame).long()
 
     def image_to_grid(self, image):
         np_image = np.array(image)
-        grid = np.zeros((np_image.shape[0], np_image.shape[1], len(COLORS)), dtype=np.float32)
+        grid = np.zeros((np_image.shape[0], np_image.shape[1]), dtype=np.int64)
         for i, color in enumerate(COLORS.values()):
-            grid[:,:,i] = (np_image[:,:,0] == color[0]) & (np_image[:,:,1] == color[1]) & (np_image[:,:,2] == color[2])
+            mask = (np_image[:,:,0] == color[0]) & (np_image[:,:,1] == color[1]) & (np_image[:,:,2] == color[2])
+            grid[mask] = i
         return grid
 
 class EnhancedSandModel(nn.Module):
     def __init__(self, input_channels=14, hidden_size=64):
         super(EnhancedSandModel, self).__init__()
+        self.embedding = nn.Embedding(input_channels, input_channels)
         self.conv1 = nn.Conv2d(input_channels * 3, hidden_size, kernel_size=3, padding=1)
         self.conv2 = nn.Conv2d(hidden_size, hidden_size, kernel_size=3, padding=1)
         self.conv3 = nn.Conv2d(hidden_size, hidden_size, kernel_size=3, padding=1)
         self.conv4 = nn.Conv2d(hidden_size, input_channels, kernel_size=3, padding=1)
 
     def forward(self, x):
-        batch_size, seq_len, height, width, channels = x.shape
-        x = x.permute(0, 1, 4, 2, 3).contiguous()
-        x = x.view(batch_size, seq_len * channels, height, width)
+        batch_size, seq_len, height, width = x.shape
+        x = self.embedding(x)
+        x = x.permute(0, 1, 4, 2, 3)
+        x = x.reshape(batch_size, seq_len * x.shape[2], height, width)
         
         x = torch.relu(self.conv1(x))
         x = torch.relu(self.conv2(x))
@@ -123,7 +137,7 @@ def calculate_element_losses(outputs, targets):
     for i in range(len(ELEMENT_NAMES)):
         element_mask = (targets == i)
         if element_mask.sum() > 0:
-            element_loss = nn.functional.cross_entropy(outputs[:, i:i+1, :, :], targets * element_mask.long())
+            element_loss = nn.functional.cross_entropy(outputs[element_mask], targets[element_mask])
             element_losses.append(element_loss.item())
         else:
             element_losses.append(0)
@@ -135,14 +149,12 @@ def train_model_curriculum(model, root_dir, num_epochs, device):
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=5, factor=0.5)
     best_val_loss = float('inf')
     
-    # Start with single elements
     elements = list(range(1, len(ELEMENT_NAMES)))  # Exclude EMPTY
     random.shuffle(elements)
     
     for epoch in range(num_epochs):
         logger.info(f"Epoch {epoch+1}/{num_epochs}")
         
-        # Determine which elements to focus on
         if epoch < num_epochs // 3:
             focus_elements = elements[:len(elements)//3]
         elif epoch < num_epochs * 2 // 3:
@@ -152,7 +164,6 @@ def train_model_curriculum(model, root_dir, num_epochs, device):
         
         logger.info(f"Focusing on elements: {[ELEMENT_NAMES[e] if isinstance(e, int) else e for e in focus_elements]}")
         
-        # Create dataset and loaders for this epoch
         dataset = CurriculumAutomatonDataset(root_dir, sequence_length=3, elements=focus_elements)
         train_size = int(0.8 * len(dataset))
         val_size = len(dataset) - train_size
@@ -167,10 +178,13 @@ def train_model_curriculum(model, root_dir, num_epochs, device):
         
         for input_sequence, target_frame in tqdm(train_loader, desc="Training"):
             input_sequence = input_sequence.to(device)
-            target_frame = target_frame.argmax(dim=3).long().to(device)
+            target_frame = target_frame.to(device)
             
             optimizer.zero_grad()
             outputs = model(input_sequence)
+            
+            outputs = outputs.permute(0, 2, 3, 1).contiguous().view(-1, outputs.shape[1])
+            target_frame = target_frame.view(-1)
             
             loss = criterion(outputs, target_frame)
             loss.backward()
@@ -190,8 +204,12 @@ def train_model_curriculum(model, root_dir, num_epochs, device):
         with torch.no_grad():
             for input_sequence, target_frame in val_loader:
                 input_sequence = input_sequence.to(device)
-                target_frame = target_frame.argmax(dim=3).long().to(device)
+                target_frame = target_frame.to(device)
                 outputs = model(input_sequence)
+                
+                outputs = outputs.permute(0, 2, 3, 1).contiguous().view(-1, outputs.shape[1])
+                target_frame = target_frame.view(-1)
+                
                 loss = criterion(outputs, target_frame)
                 val_loss += loss.item()
                 element_losses = calculate_element_losses(outputs, target_frame)
@@ -205,7 +223,6 @@ def train_model_curriculum(model, root_dir, num_epochs, device):
         logger.info(f"Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
         logger.info(f"Memory Usage: {psutil.virtual_memory().percent}%")
         
-        # Report top 5 problematic elements
         sorted_elements = sorted(zip(ELEMENT_NAMES, val_element_losses), key=lambda x: x[1], reverse=True)
         logger.info("Top 5 problematic elements:")
         for element, loss in sorted_elements[:5]:
@@ -216,7 +233,6 @@ def train_model_curriculum(model, root_dir, num_epochs, device):
             logger.info("Saved new best model")
             best_val_loss = val_loss
         
-        # Update element order based on losses
         elements = [e for _, e in sorted(zip(val_element_losses, range(len(ELEMENT_NAMES))), reverse=True)]
         elements = [e for e in elements if e != EMPTY]  # Keep EMPTY excluded
 
@@ -232,14 +248,14 @@ def test_element(model, element_folder, device):
     with torch.no_grad():
         for input_sequence, target_frame in test_loader:
             input_sequence = input_sequence.to(device)
-            target_frame = target_frame.argmax(dim=3).long().to(device)
+            target_frame = target_frame.to(device)
             outputs = model(input_sequence)
-            loss = nn.functional.cross_entropy(outputs, target_frame)
+            loss = nn.functional.cross_entropy(outputs.permute(0, 2, 3, 1).reshape(-1, outputs.shape[1]), target_frame.reshape(-1))
             test_loss += loss.item()
             
             _, predicted = outputs.max(1)
-            total += target_frame.size(0) * target_frame.size(1) * target_frame.size(2)
-            correct += predicted.eq(target_frame).sum().item()
+            total += target_frame.numel()
+            correct += (predicted == target_frame).sum().item()
     
     accuracy = 100.0 * correct / total
     test_loss /= len(test_loader)
@@ -267,7 +283,7 @@ def main():
             logger.warning(f"Folder not found for {ELEMENT_NAMES[element_name]}")
 
     # Test all elements
-    all_elements_folder = "curriculum_falling_sand_frames/all_elements"
+    all_elements_folder = "curriculum_falling_sand_frames/all_elements_instance_0/all_elements"
     if os.path.exists(all_elements_folder):
         test_loss, accuracy = test_element(model, all_elements_folder, device)
         logger.info(f"All Elements - Test Loss: {test_loss:.4f}, Accuracy: {accuracy:.2f}%")
